@@ -18,44 +18,34 @@ const limiter = new Bottleneck({
 const systemPrompt = fs.readFileSync("systemPrompt.txt", "utf-8");
 
 /* =========================
-   🔒 GLOBAL LOCK (ONLY 1 PERSON AT A TIME)
+   GLOBAL QUEUE (ONE USER AT A TIME)
 ========================= */
 
-let botBusy = false;
+const queue = [];
+let processing = false;
 
 /* =========================
-   🕒 USER COOLDOWNS (30s per user)
-========================= */
-
-const userCooldowns = new Map();
-
-function waitUserCooldown(userId) {
-  const last = userCooldowns.get(userId) || 0;
-  const now = Date.now();
-
-  const waitTime = Math.max(0, 30000 - (now - last));
-
-  return new Promise(resolve => {
-    setTimeout(() => {
-      userCooldowns.set(userId, Date.now());
-      resolve();
-    }, waitTime);
-  });
-}
-
-/* =========================
-   SESSION MEMORY
+   USER DATA
 ========================= */
 
 const sessions = {};
+const buffers = new Map();
+const timers = new Map();
+const lastReply = new Map();
+
+/* =========================
+   SESSION
+========================= */
 
 function getSession(uid) {
-  if (!sessions[uid]) sessions[uid] = { state: {}, history: [] };
+  if (!sessions[uid]) {
+    sessions[uid] = { state: {}, history: [] };
+  }
   return sessions[uid];
 }
 
 /* =========================
-   GEMINI CHAT
+   GEMINI
 ========================= */
 
 async function chat(uid, userText) {
@@ -74,149 +64,150 @@ async function chat(uid, userText) {
     ? `[Lead so far: ${JSON.stringify(session.state)}]`
     : "";
 
-  const aiResponse = await limiter.schedule(() =>
+  const res = await limiter.schedule(() =>
     axios.post(
       `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${process.env.GEMINI_KEY}`,
       {
         system_instruction: {
-          parts: [{ text: systemPrompt + "\n\n" + stateStr }]
+          parts: [{
+            text:
+              systemPrompt +
+              "\n\nUse short replies (3–4 lines). Mix English + Roman Urdu. Use 'aap'. No Hindi." +
+              "\n\n" + stateStr
+          }]
         },
         contents: session.history
       }
     )
   );
 
-  const rawReply =
-    aiResponse.data.candidates[0].content.parts[0].text;
+  const raw = res.data.candidates[0].content.parts[0].text;
 
-  const jsonMatch = rawReply.match(/\{"_state":.+\}/);
-
-  if (jsonMatch) {
-    try {
-      const extracted = JSON.parse(jsonMatch[0])._state;
-      Object.assign(session.state, extracted);
-      console.log(`[${uid}] state:`, session.state);
-    } catch (e) {
-      console.error("State parse failed:", e.message);
-    }
-  }
-
-  const cleanReply = rawReply
-    .replace(/\{"_state":.+\}/, "")
-    .trim();
+  const clean = raw.replace(/\{"_state":.+\}/, "").trim();
 
   session.history.push({
     role: "model",
-    parts: [{ text: cleanReply }]
+    parts: [{ text: clean }]
   });
 
-  return cleanReply;
+  return clean;
 }
 
 /* =========================
-   ROUTES
+   SEND MESSAGE
 ========================= */
 
-app.get("/", (req, res) => {
-  res.send("working");
-});
-
-/* VERIFY WEBHOOK */
-app.get("/webhook", (req, res) => {
-  const verify_token = "123aaa";
-  const mode = req.query["hub.mode"];
-  const token = req.query["hub.verify_token"];
-  const challenge = req.query["hub.challenge"];
-
-  if (mode && token === verify_token) {
-    res.status(200).send(challenge);
-  } else {
-    res.sendStatus(403);
-  }
-});
+async function sendWhatsApp(to, text) {
+  await axios.post(
+    `https://graph.facebook.com/v19.0/${process.env.PHONE_NUMBER_ID}/messages`,
+    {
+      messaging_product: "whatsapp",
+      to,
+      text: { body: text }
+    },
+    {
+      headers: {
+        Authorization: `Bearer ${process.env.WHATSAPP_TOKEN}`,
+        "Content-Type": "application/json"
+      }
+    }
+  );
+}
 
 /* =========================
-   MAIN WEBHOOK
+   PROCESS ONE USER (STRICT QUEUE)
+========================= */
+
+async function processQueue() {
+  if (processing) return;
+  if (queue.length === 0) return;
+
+  processing = true;
+
+  const userId = queue.shift();
+  const msgs = buffers.get(userId) || [];
+
+  buffers.delete(userId);
+
+  if (msgs.length === 0) {
+    processing = false;
+    return processQueue();
+  }
+
+  const now = Date.now();
+  const last = lastReply.get(userId) || 0;
+
+  if (now - last < 30000) {
+    queue.push(userId);
+    processing = false;
+    return setTimeout(processQueue, 3000);
+  }
+
+  const combined = msgs.join("\n");
+
+  const reply = await chat(userId, combined);
+
+  await new Promise(r => setTimeout(r, 5000)); // typing delay
+
+  await sendWhatsApp(userId, reply);
+
+  lastReply.set(userId, Date.now());
+
+  processing = false;
+
+  processQueue();
+}
+
+/* =========================
+   QUEUE MESSAGE
+========================= */
+
+function queueMessage(userId, text) {
+  if (!buffers.has(userId)) buffers.set(userId, []);
+
+  buffers.get(userId).push(text);
+
+  if (!queue.includes(userId)) {
+    queue.push(userId);
+  }
+
+  if (timers.get(userId)) {
+    clearTimeout(timers.get(userId));
+  }
+
+  timers.set(
+    userId,
+    setTimeout(() => {
+      processQueue();
+    }, 6000) // batching window
+  );
+}
+
+/* =========================
+   WEBHOOK
 ========================= */
 
 app.post("/webhook", async (req, res) => {
-  try {
-    const message =
-      req.body.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
+  const message =
+    req.body.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
 
-    if (!message) return res.sendStatus(200);
+  if (!message) return res.sendStatus(200);
 
-    const userText = message.text?.body;
-    const from = message.from;
+  const from = message.from;
+  const text = message.text?.body;
 
-    if (!userText) return res.sendStatus(200);
+  if (!text) return res.sendStatus(200);
 
-    /* =========================
-       🔒 GLOBAL LOCK (ONLY 1 PERSON AT A TIME)
-    ========================= */
+  queueMessage(from, text);
 
-    while (botBusy) {
-      await new Promise(r => setTimeout(r, 1000));
-    }
-
-    botBusy = true;
-
-    try {
-      /* =========================
-         USER COOLDOWN (30s)
-      ========================= */
-
-      await waitUserCooldown(from);
-
-      /* =========================
-         THINKING DELAY
-      ========================= */
-
-      await new Promise(r => setTimeout(r, 2000));
-
-      const reply = await chat(from, userText);
-
-      /* =========================
-         7s TYPING SIMULATION
-      ========================= */
-
-      await new Promise(r => setTimeout(r, 7000));
-
-      /* =========================
-         SEND MESSAGE
-      ========================= */
-
-      await axios.post(
-        `https://graph.facebook.com/v19.0/${process.env.PHONE_NUMBER_ID}/messages`,
-        {
-          messaging_product: "whatsapp",
-          to: from,
-          text: { body: reply }
-        },
-        {
-          headers: {
-            Authorization: `Bearer ${process.env.WHATSAPP_TOKEN}`,
-            "Content-Type": "application/json"
-          }
-        }
-      );
-
-    } finally {
-      botBusy = false;
-    }
-
-    res.sendStatus(200);
-
-  } catch (error) {
-    botBusy = false;
-    console.log("ERROR:", error.response?.data || error.message);
-    res.sendStatus(200);
-  }
+  res.sendStatus(200);
 });
 
 /* =========================
-   START SERVER
+   SERVER
 ========================= */
+
+app.get("/", (req, res) => res.send("Beemo running"));
 
 app.listen(3000, () => {
   console.log("Server running on port 3000");
