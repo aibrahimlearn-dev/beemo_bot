@@ -84,7 +84,9 @@ async function askAI(phone, userText) {
     setSession(phone, "msgCount", (session.msgCount || 0) + 1);
     return reply;
   } catch (err) {
-    console.error("AI err:", err?.response?.data?.error?.message || err.message);
+    const detail = err?.response?.data?.error?.message || err.message;
+    console.error("❌ DeepSeek FAILED:", detail);
+    console.error("   Full:", JSON.stringify(err?.response?.data || {}).substring(0, 200));
     return fallback(userText);
   }
 }
@@ -99,7 +101,22 @@ function fallback(text) {
     return "I can help with that! Your name aur kis date se room chahiye? Professor Yahya will confirm.";
   if (t.includes("location") || t.includes("where"))
     return "We're in I-11/2, Islamabad — House 1572, Street 8. Just 5 min from FAST, NUTECH, and Bahria University.";
-  return "Hi! I'm Beemo from Ibrahim Hostel Islamabad. How can I help you?";
+  if (t.includes("hi") || t.includes("hello") || t.includes("hey") || t.includes("salam"))
+    return "Hi! I'm Beemo from Ibrahim Hostel Islamabad 🏠\n\nAap kahan study ya job karte hain? Aur approximately kitne arse ke liye accommodation chahiye?";
+  if (t.includes("name") || t.includes("who are you"))
+    return "I'm Beemo, the booking assistant for Ibrahim Hostel Islamabad 🏠";
+  // For anything else, give a real answer not a greeting
+  if (t.includes("available") || t.includes("vacancy") || t.includes("space") || t.includes("seat"))
+    return "Yes, we have availability! We have 4-seater, 3-seater, 2-seater, and 1-seater options. Kis date se chahiye aapko?";
+  if (t.includes("week") || t.includes("night") || t.includes("short") || t.includes("day"))
+    return "For short stays, we offer nightly rates. Aap kitne din ke liye chahiye?";
+  if (t.includes("month") || t.includes("long") || t.includes("semester") || t.includes("year"))
+    return "For long-term stays, we have monthly packages. Per person per month (all-inclusive):\n• 4-seater: ~18,000 PKR\n• 3-seater: ~22,000 PKR\n• 2-seater: ~24,000 PKR\n• 1-seater: ~28,000 PKR";
+  if (t.includes("food") || t.includes("meal") || t.includes("khana") || t.includes("wifi") || t.includes("facility"))
+    return "All our packages include: fiber WiFi per floor, 2 hygienic meals/day, CCTV + 24/7 guard, weekly laundry, and parking.";
+  if (t.includes("fast") || t.includes("nust") || t.includes("nutech") || t.includes("bahria") || t.includes("university"))
+    return "We're in I-11/2, Islamabad — just 5 min from FAST, NUTECH, Bahria, Air Uni, IIUI, and 10-15 min from NUST.";
+  return "I can help you with rooms, prices, location, and bookings for Ibrahim Hostel Islamabad. Aap kya janna chahenge?";
 }
 
 // ─── SEND WHATSAPP ─────────────────────────────────────
@@ -140,6 +157,7 @@ async function handle(phone, text) {
   }
 
   // Handle intents
+  const wantsPrice = /\b(price|rate|cost|how much|fee|rent|kitna|charges)\b/i.test(lower);
   const wantsBook = /\b(book|reserve|deposit|pay|hold|advance|confirm)\b/i.test(lower);
   const wantsPics = /\b(pic|photo|image|see|show|look|dekhao|dikhao)\b/i.test(lower);
   const wantsRooms = /\b(room|dorm|seater|accommodation|kamra)\b/i.test(lower);
@@ -149,6 +167,7 @@ async function handle(phone, text) {
   const wants2Seat = /\b(2.?seater|two.?seater)\b/i.test(lower);
 
   if (wants1Seat || wants2Seat) { await send(phone, "Those specific rooms are often booked and availability changes fast. Professor Yahya handles those personally — he'll guide you shortly."); return; }
+  if (wantsPrice) { await send(phone, "Per person per month (all-inclusive — rent + 2 meals + WiFi + laundry):\n• 4-seater: ~18,000 PKR\n• 3-seater: ~22,000 PKR\n• 2-seater: ~24,000 PKR\n• 1-seater: ~28,000 PKR\n\nWhich room type interests you?"); return; }
   if (wantsHuman) { await send(phone, "I'll connect you with Professor Yahya 🙋 He'll reply here personally."); return; }
   if (wantsBook) { await send(phone, "Great! Could you share your name aur kis date se room chahiye? Professor Yahya will confirm."); return; }
   if (wantsRooms && wantsPics) { await send(phone, "I'd send you photos but the images aren't uploaded yet. Here are the options:\n• 4-seater: ~18,000 PKR\n• 3-seater: ~22,000 PKR\n• 2-seater: ~24,000 PKR\n• 1-seater: ~28,000 PKR\n\nWhich one interests you?"); return; }
