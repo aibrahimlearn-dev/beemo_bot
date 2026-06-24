@@ -15,17 +15,31 @@ const WA_H = { Authorization: `Bearer ${process.env.WHATSAPP_TOKEN}`, "Content-T
 const SYSTEM = fs.readFileSync("systemPrompt.txt", "utf-8");
 const TTL = 259200000; // 3 days
 
-// ─── SESSION (memory, no I/O — survives normal Render sleep) ──
+// ─── SESSION (3 day TTL, max 50) ──
 
 const $ = {};
+const ACTIVE_SLOTS = 5;
+const ACTIVE_WINDOW = 1800000; // 30 min
 
 function get$(phone) {
   const n = Date.now();
-  if (!$[phone] || n > $[phone].exp) $[phone] = { d: {}, exp: n + TTL };
+  if (!$[phone] || n > $[phone].exp) {
+    if (Object.keys($).length >= 50) {
+      const oldest = Object.entries($).sort((a, b) => a[1].exp - b[1].exp)[0];
+      if (oldest) delete $[oldest[0]];
+    }
+    $[phone] = { d: {}, exp: n + TTL };
+  }
   return $[phone].d;
 }
 
 function set$(phone, k, v) { const s = get$(phone); s[k] = v; $[phone].exp = Date.now() + TTL; }
+
+function activeCount() {
+  const n = Date.now(); let c = 0;
+  for (const v of Object.values($)) if (v.d._lastActive && n - v.d._lastActive < ACTIVE_WINDOW) c++;
+  return c;
+}
 
 // ─── HISTORY ────────────────────────────────────────────
 
@@ -183,6 +197,7 @@ async function processFU() {
 // ─── MAIN HANDLER ───────────────────────────────────────
 
 async function handle(phone, text) {
+  set$(phone, "_lastActive", Date.now());
   const t = text.trim(), l = t.toLowerCase();
 
   // Abuse check
@@ -209,14 +224,14 @@ async function handle(phone, text) {
   // First greeting
   if (!s.greeted && /^(hi|hello|hey|salam|hii?|helloo?)\W*$/i.test(t)) {
     set$(phone, "greeted", true);
-    await txt(phone, "Hi! I'm Beemo from Ibrahim Hostel Islamabad 🏠\n\nAap kahan study ya job karte hain? Aur approximately kitne arse ke liye accommodation chahiye?");
+    await txt(phone, "Hi! I'm Beemo from Ibrahim Hostel Islamabad 🏠\n\nAap kahan study ya job karte hain?");
     return;
   }
   if (!s.greeted) set$(phone, "greeted", true);
 
   // Info extraction
-  if (!s.name) { const m = t.match(/(?:i'm|my name is|call me|i am|mera naam|naam|main\s+\w+\s+(\w+))\s+(\w+)/i); if (m) set$(phone, "name", sanitize(m[2] || m[1])); }
-  if (!s.from) { const m = t.match(/(?:from|se hoon|mein rehta|rehte hain)\s+(\w+(?:\s+\w+)?)/i); if (m) set$(phone, "from", sanitize(m[1])); }
+  if (!s.name) { const m = t.match(/(?:i'm|my name is|call me|i am|mera naam|naam|main\s+(\w+))\s+(\w+)/i); if (m) set$(phone, "name", sanitize(m[2] || m[1])); }
+  if (!s.from) { const m = t.match(/(?:from|se hoon|mein rehta|rehte hain|main)\s+(\w+(?:\s+\w+)?)/i); if (m && !/^(hi|hello|hey|study|job|student|hmm|acha|theek)$/i.test(m[1])) set$(phone, "from", sanitize(m[1])); }
 
   // Intents
   if (/\b(1.?seater|one.?seater|single|private room)\b/i.test(l) || /\b(2.?seater|two.?seater)\b/i.test(l)) {
@@ -264,6 +279,10 @@ app.post("/webhook", async (req, res) => {
     if (msg.type === "text") {
       const text = (msg.text.body || "").substring(0, 1000);
       console.log(`📩 ${phone.slice(-6)}: ${text.substring(0, 60)}`);
+      if (activeCount() >= ACTIVE_SLOTS) {
+        await txt(phone, "Beemo here — I'm helping a few others right now. I'll reply in just a moment! 😊");
+        return res.sendStatus(200);
+      }
       await handle(phone, text);
     }
 
