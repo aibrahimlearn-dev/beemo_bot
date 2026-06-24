@@ -138,7 +138,7 @@ async function processFU() {
   }
 }
 
-// ─── DEEPSEEK ───────────────────────────────────────────
+// ─── DEEPSEEK with GEMINI fallback ─────────────────────
 
 async function ai(phone, text) {
   const session = get$(phone), h = getH(phone);
@@ -151,18 +151,37 @@ async function ai(phone, text) {
   for (const m of h) msgs.push(m);
   msgs.push({ role: "user", content: ctx + text });
 
-  try {
-    const r = await axios.post("https://api.deepseek.com/chat/completions",
-      { model: "deepseek-chat", messages: msgs, max_tokens: 500, temperature: 0.7 },
-      { headers: { Authorization: `Bearer ${process.env.DEEPSEEK_KEY}`, "Content-Type": "application/json" }, timeout: 30000 });
-    const reply = r.data.choices[0].message.content;
-    addH(phone, "user", text); addH(phone, "assistant", reply);
-    set$(phone, "msgCount", (session.msgCount || 0) + 1);
-    return reply;
-  } catch (e) {
-    console.error("❌ AI:", e?.response?.data?.error?.message || e.message);
-    return "I'm having a quick technical issue — one moment please! Try asking again or I'll get back to you shortly.";
+  // Try DeepSeek first
+  if (process.env.DEEPSEEK_KEY) {
+    try {
+      const r = await axios.post("https://api.deepseek.com/chat/completions",
+        { model: "deepseek-chat", messages: msgs, max_tokens: 500, temperature: 0.7 },
+        { headers: { Authorization: `Bearer ${process.env.DEEPSEEK_KEY}`, "Content-Type": "application/json" }, timeout: 15000 });
+      const reply = r.data.choices[0].message.content;
+      addH(phone, "user", text); addH(phone, "assistant", reply);
+      set$(phone, "msgCount", (session.msgCount || 0) + 1);
+      return reply;
+    } catch (e) { console.error("❌ DeepSeek:", e?.response?.data?.error?.message || e.message); }
   }
+
+  // Fallback to Gemini
+  if (process.env.GEMINI_KEY) {
+    try {
+      const geminiMsgs = [];
+      for (const m of h) geminiMsgs.push({ role: m.role === "assistant" ? "model" : "user", parts: [{ text: m.content }] });
+      geminiMsgs.push({ role: "user", parts: [{ text: ctx + text }] });
+      const r = await axios.post(
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${process.env.GEMINI_KEY}`,
+        { system_instruction: { parts: [{ text: SYSTEM }] }, contents: geminiMsgs },
+        { timeout: 15000 });
+      const reply = r.data.candidates[0].content.parts[0].text;
+      addH(phone, "user", text); addH(phone, "assistant", reply);
+      set$(phone, "msgCount", (session.msgCount || 0) + 1);
+      return reply;
+    } catch (e) { console.error("❌ Gemini:", e?.response?.data?.error?.message || e.message); }
+  }
+
+  return "I'm having a technical issue — one moment please! Professor Yahya can also help you directly.";
 }
 
 // ─── MAIN HANDLER ───────────────────────────────────────
