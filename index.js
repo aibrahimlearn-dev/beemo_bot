@@ -252,7 +252,7 @@ app.post("/webhook", async (req, res) => {
       else if (reply.id === "BROWSE_ROOMS") await txt(phone, "Per person/month (all-inclusive):\n🧑‍🤝‍🧑 4-seater: ~18,000\n👥 3-seater: ~22,000\n👫 2-seater: ~24,000\n🧑 1-seater: ~28,000\n\nKaunsa room aapke liye sahi rahega?");
       else if (reply.id === "MORE_LOCATION") await txt(phone, "📍 We're in I-11/2, Islamabad — House 1572, Street 8.\n\n🚶 5 min: FAST, NUTECH, Bahria, Air Uni, IIUI\n🚗 10-15 min: NUST\n\nQuiet residential area, safe for students.");
       else if (reply.id === "BOOK_NOW") { await txt(phone, "Great! Could you share your name aur kis date se room chahiye? Professor Yahya will confirm."); await scheduleFU(phone); }
-      else if (reply.id === "TALK_HUMAN") await txt(phone, "Connecting you with Professor Yahya 🙋 He'll reply here.");
+      else if (reply.id === "TALK_HUMAN") await txt(phone, "I'll let Professor Yahya know. He'll get back to you as soon as he's available 🙋");
       else await handle(phone, reply.title);
     }
 
