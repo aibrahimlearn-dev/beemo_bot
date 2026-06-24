@@ -306,7 +306,7 @@ function fallbackReply(text, session) {
     return "We're in I-11/2, Islamabad — House 1572, Street 8. Just 5 min from FAST, NUTECH, and Bahria University.";
   }
   if (t.includes("hi") || t.includes("hello") || t.includes("hey") || t.includes("assalamualaikum") || t.includes("salam")) {
-    return "Assalamualaikum! I'm Beemo from Ibrahim Hostel 🏠\n\nAre you looking for accommodation for yourself? Which university or workplace are you at?";
+    return "Hi! I'm Beemo from Ibrahim Hostel 🏠\n\nAre you looking for accommodation for yourself? Which university or workplace are you at?";
   }
   if (n) return `${n}, how can I help you with your stay at Ibrahim Hostel?`;
   return "Hello! I'm Beemo from Ibrahim Hostel 🏠 How can I help you today?";
@@ -576,7 +576,7 @@ async function handleMessage(phone, text, fromQueue = false) {
   const needsIntro = !s.greeted;
   setSession(phone, "greeted", true);
   if (isGreeting && needsIntro) {
-    await sendText(phone, "Assalamualaikum! Main Beemo hoon, Ibrahim Hostel Islamabad se 🏠\n\nAap kahan study ya job karte hain? Aur approximately kitne arse ke liye accommodation chahiye?\n\nMujhe apne baare mein kuch bata sakte hain, main aapke liye best option suggest karunga 😊");
+    await sendText(phone, "Hi! I'm Beemo from Ibrahim Hostel Islamabad 🏠\n\nAap kahan study ya job karte hain? Aur approximately kitne arse ke liye accommodation chahiye?\n\nMujhe apne baare mein kuch bata sakte hain, main aapke liye best option suggest karunga 😊");
     return;
   }
   if (isGreeting && !needsIntro) { return; } // ignore repeated "hi"
