@@ -5,186 +5,260 @@ const fs = require("fs");
 
 const app = express();
 app.use(express.json({ limit: "1mb" }));
+process.on("unhandledRejection", e => console.error("💥", e?.message));
+process.on("uncaughtException", e => console.error("💥", e?.message));
 
-process.on("unhandledRejection", e => console.error("Crash:", e?.message));
-process.on("uncaughtException", e => console.error("Crash:", e?.message));
-
-// ─── CONFIG ────────────────────────────────────────────
+// ─── CONFIG ─────────────────────────────────────────────
 
 const WA_API = `https://graph.facebook.com/v19.0/${process.env.PHONE_NUMBER_ID}/messages`;
-const WA_HEADERS = { Authorization: `Bearer ${process.env.WHATSAPP_TOKEN}`, "Content-Type": "application/json" };
-const SYSTEM_PROMPT = fs.readFileSync("systemPrompt.txt", "utf-8");
-const SESSION_TTL = 259200000; // 3 days in ms
+const WA_H = { Authorization: `Bearer ${process.env.WHATSAPP_TOKEN}`, "Content-Type": "application/json" };
+const SYSTEM = fs.readFileSync("systemPrompt.txt", "utf-8");
+const TTL = 259200000; // 3 days
 
-// ─── SIMPLE SESSION (memory only, no file I/O) ─────────
+// ─── SESSION (memory, no I/O — survives normal Render sleep) ──
 
-const sessions = {}; // { phone: { data: {...}, expires: timestamp } }
+const $ = {};
 
-function getSession(phone) {
-  const now = Date.now();
-  if (!sessions[phone] || now > sessions[phone].expires) {
-    sessions[phone] = { data: {}, expires: now + SESSION_TTL };
-  }
-  return sessions[phone].data;
+function get$(phone) {
+  const n = Date.now();
+  if (!$[phone] || n > $[phone].exp) $[phone] = { d: {}, exp: n + TTL };
+  return $[phone].d;
 }
 
-function setSession(phone, key, val) {
-  const s = getSession(phone);
-  s[key] = val;
-  sessions[phone].expires = Date.now() + SESSION_TTL;
-}
+function set$(phone, k, v) { const s = get$(phone); s[k] = v; $[phone].exp = Date.now() + TTL; }
 
-// ─── CHAT HISTORY ──────────────────────────────────────
+// ─── HISTORY ────────────────────────────────────────────
 
-const chatHistory = {};
+const H = {};
 
-function getHistory(phone) {
-  if (!chatHistory[phone]) chatHistory[phone] = [];
-  return chatHistory[phone];
-}
+function getH(phone) { if (!H[phone]) H[phone] = []; return H[phone]; }
+function addH(phone, role, text) { const h = getH(phone); h.push({ role, content: text }); if (h.length > 8) h.splice(0, h.length - 8); }
 
-function addHistory(phone, role, text) {
-  const h = getHistory(phone);
-  h.push({ role, content: text });
-  if (h.length > 10) h.splice(0, h.length - 10);
-}
+// ─── ABUSE / PROMPT INJECTION ───────────────────────────
 
-// ─── DEEPSEEK ──────────────────────────────────────────
+const ABUSE = [/ignore\s+(all\s+)?(previous|above|system).{0,20}(instruction|prompt|rule)/i,
+  /(hack|crack|exploit|bypass|inject|malicious|virus|malware|attack)/i,
+  /(credit.?card|password|bank.?account|ssn|social.?security)/i,
+  /\b(cv|cvv|pin|otp|2fa)\b/i, /(fuck|shit|bitch|asshole|bastard)/i,
+  /(kill|die|hurt|harm)\s+(yourself|you)/i];
 
-async function askAI(phone, userText) {
-  const session = getSession(phone);
-  const h = getHistory(phone);
+function isAbuse(t) { return ABUSE.some(p => p.test(t)); }
 
-  // Build context
+// ─── SANITIZE ───────────────────────────────────────────
+
+const sanitize = s => s.replace(/[^a-zA-Z0-9\s\-,]/g, "").trim().substring(0, 100);
+
+// ─── DEEPSEEK ───────────────────────────────────────────
+
+async function ai(phone, text) {
+  const session = get$(phone), h = getH(phone);
   let ctx = "";
-  const fields = { name: "Name", from: "From", dates: "Dates", duration: "Duration", workStudy: "Work/Study", roomType: "Room interest" };
-  for (const [k, label] of Object.entries(fields)) {
-    if (session[k]) ctx += `${label}: ${session[k]}\n`;
-  }
-  if (ctx) ctx = `[Guest info:\n${ctx}]\n\n`;
+  for (const [k, l] of Object.entries({ name: "Name", from: "From", dates: "Dates", duration: "Duration", workStudy: "Work/Study", roomType: "Room interest" }))
+    if (session[k]) ctx += `${l}: ${session[k]}\n`;
+  if (ctx) ctx = `[${ctx}]\n`;
 
-  const msgs = [{ role: "system", content: SYSTEM_PROMPT }];
+  const msgs = [{ role: "system", content: SYSTEM }];
   for (const m of h) msgs.push(m);
-  msgs.push({ role: "user", content: ctx + userText });
+  msgs.push({ role: "user", content: ctx + text });
 
   try {
-    const res = await axios.post("https://api.deepseek.com/chat/completions", {
-      model: "deepseek-chat",
-      messages: msgs,
-      max_tokens: 500,
-      temperature: 0.7,
-    }, {
-      headers: { Authorization: `Bearer ${process.env.DEEPSEEK_KEY}`, "Content-Type": "application/json" },
-      timeout: 30000,
-    });
-
-    const reply = res.data.choices[0].message.content;
-    addHistory(phone, "user", userText);
-    addHistory(phone, "assistant", reply);
-    setSession(phone, "msgCount", (session.msgCount || 0) + 1);
+    const r = await axios.post("https://api.deepseek.com/chat/completions", { model: "deepseek-chat", messages: msgs, max_tokens: 500, temperature: 0.7 },
+      { headers: { Authorization: `Bearer ${process.env.DEEPSEEK_KEY}`, "Content-Type": "application/json" }, timeout: 30000 });
+    const reply = r.data.choices[0].message.content;
+    addH(phone, "user", text); addH(phone, "assistant", reply);
+    set$(phone, "msgCount", (session.msgCount || 0) + 1);
     return reply;
-  } catch (err) {
-    const detail = err?.response?.data?.error?.message || err.message;
-    console.error("❌ DeepSeek FAILED:", detail);
-    console.error("   Full:", JSON.stringify(err?.response?.data || {}).substring(0, 200));
-    return fallback(userText);
+  } catch (e) {
+    console.error("❌ AI:", e?.response?.data?.error?.message || e.message);
+    return fallback(text);
   }
 }
 
-function fallback(text) {
-  const t = text.toLowerCase();
-  if (t.includes("price") || t.includes("rate") || t.includes("cost") || t.includes("how much"))
-    return "Here are our monthly rates (per person, all-inclusive):\n• 4-seater: ~18,000 PKR\n• 3-seater: ~22,000 PKR\n• 2-seater: ~24,000 PKR\n• 1-seater: ~28,000 PKR\n\nWould you like to see photos?";
-  if (t.includes("photo") || t.includes("picture") || t.includes("pic") || t.includes("see") || t.includes("show"))
-    return "Sure! Which would you like to see?\n1. Dorm rooms\n2. Common areas & facilities\n3. Food menu";
-  if (t.includes("book") || t.includes("reserve") || t.includes("deposit") || t.includes("pay"))
-    return "I can help with that! Your name aur kis date se room chahiye? Professor Yahya will confirm.";
-  if (t.includes("location") || t.includes("where"))
-    return "We're in I-11/2, Islamabad — House 1572, Street 8. Just 5 min from FAST, NUTECH, and Bahria University.";
-  if (t.includes("hi") || t.includes("hello") || t.includes("hey") || t.includes("salam"))
-    return "Hi! I'm Beemo from Ibrahim Hostel Islamabad 🏠\n\nAap kahan study ya job karte hain? Aur approximately kitne arse ke liye accommodation chahiye?";
-  if (t.includes("name") || t.includes("who are you"))
-    return "I'm Beemo, the booking assistant for Ibrahim Hostel Islamabad 🏠";
-  // For anything else, give a real answer not a greeting
-  if (t.includes("available") || t.includes("vacancy") || t.includes("space") || t.includes("seat"))
-    return "Yes, we have availability! We have 4-seater, 3-seater, 2-seater, and 1-seater options. Kis date se chahiye aapko?";
-  if (t.includes("week") || t.includes("night") || t.includes("short") || t.includes("day"))
-    return "For short stays, we offer nightly rates. Aap kitne din ke liye chahiye?";
-  if (t.includes("month") || t.includes("long") || t.includes("semester") || t.includes("year"))
-    return "For long-term stays, we have monthly packages. Per person per month (all-inclusive):\n• 4-seater: ~18,000 PKR\n• 3-seater: ~22,000 PKR\n• 2-seater: ~24,000 PKR\n• 1-seater: ~28,000 PKR";
-  if (t.includes("food") || t.includes("meal") || t.includes("khana") || t.includes("wifi") || t.includes("facility"))
-    return "All our packages include: fiber WiFi per floor, 2 hygienic meals/day, CCTV + 24/7 guard, weekly laundry, and parking.";
-  if (t.includes("fast") || t.includes("nust") || t.includes("nutech") || t.includes("bahria") || t.includes("university"))
-    return "We're in I-11/2, Islamabad — just 5 min from FAST, NUTECH, Bahria, Air Uni, IIUI, and 10-15 min from NUST.";
-  return "I can help you with rooms, prices, location, and bookings for Ibrahim Hostel Islamabad. Aap kya janna chahenge?";
+function fallback(t) {
+  const l = t.toLowerCase();
+  if (/price|rate|cost|how much|fee|rent|kitna|charges/.test(l)) return "Per person/month (all-inclusive):\n• 4-seater: ~18,000 PKR\n• 3-seater: ~22,000 PKR\n• 2-seater: ~24,000 PKR\n• 1-seater: ~28,000 PKR\n\nWhich interests you?";
+  if (/book|reserve|deposit|pay|hold|advance|confirm/.test(l)) return "Your name aur kis date se room chahiye? Professor Yahya will confirm.";
+  if (/photo|picture|pic|see|show|look|dekhao/.test(l)) return "Which would you like to see?\n1. Rooms\n2. Facilities\n3. Food";
+  if (/location|where/.test(l)) return "I-11/2, Islamabad — 5 min from FAST, NUTECH, Bahria.";
+  if (/hi|hello|hey|salam/.test(l)) return "Hi! I'm Beemo from Ibrahim Hostel Islamabad 🏠\n\nAap kahan study ya job karte hain? Aur kitne arse ke liye chahiye?";
+  if (/month|semester|year|long/.test(l)) return "Monthly packages (all-inclusive):\n• 4-seater: ~18,000\n• 3-seater: ~22,000\n• 2-seater: ~24,000\n• 1-seater: ~28,000";
+  if (/week|night|day|short/.test(l)) return "We have nightly rates too. Aap kitne din ke liye chahiye?";
+  if (/food|meal|khana|wifi|facility/.test(l)) return "All include: fiber WiFi, 2 meals/day, CCTV, guard, laundry, parking.";
+  if (/uni|university|college|fast|nust/.test(l)) return "We're in I-11/2 — 5 min from FAST, NUTECH, Bahria, 10-15 min from NUST.";
+  if (/1.?seater|one.?seater|single/.test(l)) return "1-seaters are often booked. Professor Yahya handles those personally.";
+  if (/available|vacancy|space|seat/.test(l)) return "Yes, we have availability! Kis date se chahiye?";
+  return "I can help with rooms, prices, location & bookings for Ibrahim Hostel. Aap kya janna chahenge?";
 }
 
-// ─── SEND WHATSAPP ─────────────────────────────────────
+// ─── WHATSAPP API ───────────────────────────────────────
 
-async function send(to, text) {
-  try {
-    const r = await axios.post(WA_API, { messaging_product: "whatsapp", to, type: "text", text: { body: text } }, { headers: WA_HEADERS });
-    if (r.status !== 200) console.error("WA status:", r.status, r.data);
-  } catch (e) { console.error("WA err:", e?.response?.data || e.message); }
+async function txt(to, text) {
+  try { await axios.post(WA_API, { messaging_product: "whatsapp", to, type: "text", text: { body: text } }, { headers: WA_H }); }
+  catch (e) { console.error("WA txt:", e?.response?.data || e.message); }
 }
 
-// ─── MAIN HANDLER ──────────────────────────────────────
+async function img(to, url, caption) {
+  try { await axios.post(WA_API, { messaging_product: "whatsapp", to, type: "image", image: { link: url, caption: caption || "" } }, { headers: WA_H }); return true; }
+  catch (e) { console.error("WA img:", e?.response?.data || e.message); return false; }
+}
+
+async function btns(to, body, list) {
+  try { await axios.post(WA_API, { messaging_product: "whatsapp", to, type: "interactive", interactive: { type: "button", body: { text: body }, action: { buttons: list.slice(0, 3).map(b => ({ type: "reply", reply: { id: b.id.substring(0, 30), title: b.title.substring(0, 20) } })) } } }, { headers: WA_H }); }
+  catch (e) { console.error("WA btns:", e?.response?.data || e.message); }
+}
+
+async function list(to, header, body, label, sections) {
+  try { await axios.post(WA_API, { messaging_product: "whatsapp", to, type: "interactive", interactive: { type: "list", header: { type: "text", text: header.substring(0, 60) }, body: { text: body }, action: { button: label.substring(0, 20), sections } } }, { headers: WA_H }); }
+  catch (e) { console.error("WA list:", e?.response?.data || e.message); }
+}
+
+// ─── MEDIA ──────────────────────────────────────────────
+
+const ROOMS = [
+  { url: "https://ibrahimhostel.com/images/4seater.jpg", cap: "4-seater — ~18,000" },
+  { url: "https://ibrahimhostel.com/images/3seater.jpg", cap: "3-seater — ~22,000" },
+  { url: "https://ibrahimhostel.com/images/2seater.jpg", cap: "2-seater — ~24,000" },
+  { url: "https://ibrahimhostel.com/images/1seater.jpg", cap: "1-seater — ~28,000" },
+];
+const FACS = [
+  { url: "https://ibrahimhostel.com/images/rooftop.jpg", cap: "Rooftop Terrace" },
+  { url: "https://ibrahimhostel.com/images/food.jpg", cap: "Fresh meals included" },
+  { url: "https://ibrahimhostel.com/images/wifi.jpg", cap: "Fiber WiFi" },
+  { url: "https://ibrahimhostel.com/images/security.jpg", cap: "CCTV + 24/7 guard" },
+];
+
+async function showRooms(to) {
+  await txt(to, "Here are our rooms —");
+  let fail = 0;
+  for (const r of ROOMS) { if (!await img(to, r.url, r.cap)) fail++; await new Promise(r => setTimeout(r, 300)); }
+  if (fail) await txt(to, "Kuch photos abhi load nahi hui, thori der mein bhej dunga. Meanwhile I can tell you about them!");
+}
+
+async function showFacs(to) {
+  await txt(to, "Our facilities:");
+  let fail = 0;
+  for (const f of FACS) { if (!await img(to, f.url, f.cap)) fail++; await new Promise(r => setTimeout(r, 300)); }
+  if (fail) await txt(to, "Kuch photos abhi nahi aa sakin, baad mein bhejunga.");
+}
+
+// ─── MENU ───────────────────────────────────────────────
+
+const MENU = [
+  { title: "🛏️ Rooms", rows: [
+    { id: "BROWSE_ROOMS", title: "Room types & prices", description: "View all room options" },
+    { id: "SEND_ROOM_PICS", title: "Room photos", description: "See the actual rooms" },
+  ]},
+  { title: "🏠 Facilities", rows: [
+    { id: "SEND_FACILITY_PICS", title: "Facilities", description: "Rooftop, WiFi, meals, security" },
+  ]},
+  { title: "📅 Booking", rows: [
+    { id: "BOOK_NOW", title: "Book now", description: "Start the booking process" },
+    { id: "TALK_HUMAN", title: "Talk to Professor Yahya", description: "He'll guide you" },
+  ]},
+];
+
+// ─── FOLLOW-UP ──────────────────────────────────────────
+
+const FU = {};
+async function scheduleFU(phone) {
+  const t = new Date(); t.setDate(t.getDate() + 1); t.setHours(9, 15, 0, 0);
+  FU[phone] = t.getTime();
+}
+async function processFU() {
+  while (true) {
+    const n = Date.now();
+    for (const [p, ts] of Object.entries(FU)) {
+      if (n >= ts) {
+        const s = get$(p);
+        if (s.blocked) { delete FU[p]; continue; }
+        await txt(p, `Hi ${s.name || ""} 👋 Beemo here — still looking? We have seats available.`);
+        await btns(p, "What would you like?", [{ id: "BOOK_NOW", title: "✅ Book now" }, { id: "SEND_ROOM_PICS", title: "📸 Rooms" }, { id: "TALK_HUMAN", title: "🙋 Talk to staff" }]);
+        delete FU[p];
+      }
+    }
+    await new Promise(r => setTimeout(r, 60000));
+  }
+}
+
+// ─── MAIN HANDLER ───────────────────────────────────────
 
 async function handle(phone, text) {
-  const s = getSession(phone);
-  const t = text.trim();
+  const t = text.trim(), l = t.toLowerCase();
 
-  // First message or simple greeting
-  if (!s.greeted) {
-    setSession(phone, "greeted", true);
-    // Only send intro for actual greetings
-    if (/^(hi|hello|hey|salam|assalamualaikum|hii?|helloo?)\W*$/i.test(t)) {
-      await send(phone, "Hi! I'm Beemo from Ibrahim Hostel Islamabad 🏠\n\nAap kahan study ya job karte hain? Aur approximately kitne arse ke liye accommodation chahiye?");
-      return;
+  // Abuse check
+  if (isAbuse(t)) { console.log(`🚫 ${phone.slice(-6)}`); set$(phone, "blocked", true); return; }
+
+  // Dead convo (short replies 2x)
+  const deadSignals = ["ok", "okay", "thanks", "thank you", "thx", "will see", "maybe later", "not now", "bye", "k", "sure", "no thanks"];
+  if (!get$(phone).blocked) {
+    const isDead = deadSignals.includes(l) || l.length < 3;
+    set$(phone, "deadCount", isDead ? (get$(phone).deadCount || 0) + 1 : 0);
+  }
+  if ((get$(phone).deadCount || 0) >= 2 || (get$(phone).msgCount || 0) >= 30 || get$(phone).blocked) {
+    if (!get$(phone).deadNotified) {
+      set$(phone, "deadNotified", true);
+      await txt(phone, "I've shared the main info here. Professor Yahya will follow up with you personally.");
     }
-    // Not a greeting — they asked something directly, skip intro
+    return;
   }
 
-  // Extract basic info
-  const lower = t.toLowerCase();
-  if (!s.name) {
-    const m = t.match(/(?:i'm|my name is|call me|this is|i am|mera naam|naam|main\s+(\w+))\s+(\w+)/i);
-    if (m) setSession(phone, "name", m[2]?.replace(/[^a-zA-Z\s-]/g, "").trim().substring(0, 50));
+  const s = get$(phone);
+  const count = (s.msgCount || 0) + 1;
+  set$(phone, "msgCount", count);
+
+  // First greeting
+  if (!s.greeted && /^(hi|hello|hey|salam|hii?|helloo?)\W*$/i.test(t)) {
+    set$(phone, "greeted", true);
+    await txt(phone, "Hi! I'm Beemo from Ibrahim Hostel Islamabad 🏠\n\nAap kahan study ya job karte hain? Aur approximately kitne arse ke liye accommodation chahiye?");
+    return;
   }
-  if (!s.from) {
-    const m = t.match(/(?:from|se hoon|mein rehta|rehte hain)\s+(\w+(?:\s+\w+)?)/i);
-    if (m) setSession(phone, "from", m[1].replace(/[^a-zA-Z0-9\s-]/g, "").trim().substring(0, 100));
+  if (!s.greeted) set$(phone, "greeted", true);
+
+  // Info extraction
+  if (!s.name) { const m = t.match(/(?:i'm|my name is|call me|i am|mera naam|naam|main\s+\w+\s+(\w+))\s+(\w+)/i); if (m) set$(phone, "name", sanitize(m[2] || m[1])); }
+  if (!s.from) { const m = t.match(/(?:from|se hoon|mein rehta|rehte hain)\s+(\w+(?:\s+\w+)?)/i); if (m) set$(phone, "from", sanitize(m[1])); }
+
+  // Intents
+  if (/\b(1.?seater|one.?seater|single|private room)\b/i.test(l) || /\b(2.?seater|two.?seater)\b/i.test(l)) {
+    await txt(phone, "Those rooms are often booked fast. Professor Yahya handles them personally — he'll guide you shortly.");
+    return;
+  }
+  if (/\b(human|agent|real person|staff|manager|yahya|professor)\b/i.test(l)) {
+    await txt(phone, "I'll connect you with Professor Yahya 🙋 He'll reply here personally. Meanwhile check ibrahimhostel.com.");
+    return;
+  }
+  if (/\b(book|reserve|deposit|pay|hold|advance|confirm)\b/i.test(l)) {
+    await txt(phone, "Great! Could you share your name aur kis date se room chahiye? Professor Yahya will confirm.");
+    await scheduleFU(phone);
+    return;
+  }
+  if (/\b(pic|photo|image|see|show|look|dekhao|dikhao)\b/i.test(l) && /\b(room|dorm|seater|accommodation|kamra)\b/i.test(l)) {
+    await showRooms(phone);
+    await btns(phone, "Which one?", [{ id: "BOOK_NOW", title: "✅ Book" }, { id: "ASK_AGAIN", title: "❓ Questions" }]);
+    return;
+  }
+  if (/\b(facility|rooftop|kitchen|wifi|security)\b/i.test(l) && /\b(pic|photo|image|see|show|look|dekhao|dikhao)\b/i.test(l)) {
+    await showFacs(phone);
+    return;
   }
 
-  // Handle intents
-  const wantsPrice = /\b(price|rate|cost|how much|fee|rent|kitna|charges)\b/i.test(lower);
-  const wantsBook = /\b(book|reserve|deposit|pay|hold|advance|confirm)\b/i.test(lower);
-  const wantsPics = /\b(pic|photo|image|see|show|look|dekhao|dikhao)\b/i.test(lower);
-  const wantsRooms = /\b(room|dorm|seater|accommodation|kamra)\b/i.test(lower);
-  const wantsFac = /\b(facility|rooftop|wifi|food|meal|kitchen|security)\b/i.test(lower);
-  const wantsHuman = /\b(human|agent|real person|staff|manager|yahya)\b/i.test(lower);
-  const wants1Seat = /\b(1.?seater|one.?seater|single|private room)\b/i.test(lower);
-  const wants2Seat = /\b(2.?seater|two.?seater)\b/i.test(lower);
+  // AI
+  const reply = await ai(phone, text);
+  await txt(phone, reply);
 
-  if (wants1Seat || wants2Seat) { await send(phone, "Those specific rooms are often booked and availability changes fast. Professor Yahya handles those personally — he'll guide you shortly."); return; }
-  if (wantsPrice) { await send(phone, "Per person per month (all-inclusive — rent + 2 meals + WiFi + laundry):\n• 4-seater: ~18,000 PKR\n• 3-seater: ~22,000 PKR\n• 2-seater: ~24,000 PKR\n• 1-seater: ~28,000 PKR\n\nWhich room type interests you?"); return; }
-  if (wantsHuman) { await send(phone, "I'll connect you with Professor Yahya 🙋 He'll reply here personally."); return; }
-  if (wantsBook) { await send(phone, "Great! Could you share your name aur kis date se room chahiye? Professor Yahya will confirm."); return; }
-  if (wantsRooms && wantsPics) { await send(phone, "I'd send you photos but the images aren't uploaded yet. Here are the options:\n• 4-seater: ~18,000 PKR\n• 3-seater: ~22,000 PKR\n• 2-seater: ~24,000 PKR\n• 1-seater: ~28,000 PKR\n\nWhich one interests you?"); return; }
-  if (wantsFac && wantsPics) { await send(phone, "Facilities include: Rooftop terrace, coworking space, common kitchen, movie room, CCTV security, fiber WiFi, 2 meals/day. All included in the package!"); return; }
-
-  // AI reply
-  const reply = await askAI(phone, text);
-  await send(phone, reply);
+  // Menu after 4+ messages (only once)
+  if (count >= 4 && !s.menuShown) {
+    set$(phone, "menuShown", true);
+    await list(phone, "Aap kya dekhna chahenge? 👇", "Browse options:", "📋 Browse", MENU);
+  }
 }
 
-// ─── WEBHOOK ───────────────────────────────────────────
+// ─── WEBHOOK ────────────────────────────────────────────
 
 app.post("/webhook", async (req, res) => {
   try {
     const msg = req.body?.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
     if (!msg) return res.sendStatus(200);
-
     const phone = msg.from;
 
     if (msg.type === "text") {
@@ -197,26 +271,20 @@ app.post("/webhook", async (req, res) => {
       const reply = msg.interactive?.button_reply || msg.interactive?.list_reply;
       if (!reply) return res.sendStatus(200);
       console.log(`🔘 ${phone.slice(-6)}: ${reply.id}`);
-      if (reply.id === "BOOK_NOW") {
-        await send(phone, "Great choice! Could you share your name aur kis date se room chahiye? Professor Yahya will confirm.");
-      } else if (reply.id === "SEND_ROOM_PICS") {
-        await send(phone, "Room options (per person/month, all-inclusive):\n• 4-seater: ~18,000 PKR\n• 3-seater: ~22,000 PKR\n• 2-seater: ~24,000 PKR\n• 1-seater: ~28,000 PKR\n\nWant to book?");
-      } else if (reply.id === "SEND_FACILITY_PICS") {
-        await send(phone, "Facilities: Rooftop terrace, coworking space, kitchen, movie room, CCTV, fiber WiFi, 2 meals. All included!");
-      } else if (reply.id === "BROWSE_ROOMS") {
-        await send(phone, "🛏️ Room options (per person/month):\n1. 4-seater — ~18,000 PKR\n2. 3-seater — ~22,000 PKR\n3. 2-seater — ~24,000 PKR\n4. 1-seater — ~28,000 PKR");
-      } else if (reply.id === "TALK_HUMAN") {
-        await send(phone, "I'll connect you with Professor Yahya 🙋 He'll reply here.");
-      } else {
-        await handle(phone, reply.title);
-      }
+      const actions = {
+        BOOK_NOW: "Great! Your name aur kis date se room chahiye? Professor Yahya will confirm.",
+        SEND_ROOM_PICS: "Room options (per person/month, all-inclusive):\n• 4-seater: ~18,000\n• 3-seater: ~22,000\n• 2-seater: ~24,000\n• 1-seater: ~28,000",
+        SEND_FACILITY_PICS: "Facilities: Rooftop, coworking, kitchen, movie room, CCTV, fiber WiFi, 2 meals/day. All included!",
+        BROWSE_ROOMS: "🛏️ Per person/month:\n1. 4-seater — ~18,000\n2. 3-seater — ~22,000\n3. 2-seater — ~24,000\n4. 1-seater — ~28,000",
+        TALK_HUMAN: "Connecting you with Professor Yahya 🙋 He'll reply here.",
+      };
+      if (actions[reply.id]) await txt(phone, actions[reply.id]);
+      else await handle(phone, reply.title);
+      if (reply.id === "BOOK_NOW") await scheduleFU(phone);
     }
 
     res.sendStatus(200);
-  } catch (e) {
-    console.error("Webhook err:", e.message);
-    res.sendStatus(200);
-  }
+  } catch (e) { console.error("⚠️", e.message); res.sendStatus(200); }
 });
 
 app.get("/webhook", (req, res) => {
@@ -225,6 +293,9 @@ app.get("/webhook", (req, res) => {
   res.sendStatus(403);
 });
 
-app.get("/", (req, res) => res.send("Beemo running"));
+app.get("/", (_, res) => res.send("Beemo 🏠"));
 
-app.listen(process.env.PORT || 3000, () => console.log("Beemo online on " + (process.env.PORT || 3000)));
+app.listen(process.env.PORT || 3000, () => {
+  console.log("Beemo online on", process.env.PORT || 3000);
+  processFU();
+});
