@@ -247,4 +247,8 @@ app.get("/webhook", (req, res) => {
 
 app.get("/", (_, res) => res.send("Beemo 🏠"));
 
-app.listen(process.env.PORT || 3000, () => { console.log("Beemo online on", process.env.PORT || 3000); processFU(); });
+app.listen(process.env.PORT || 3000, () => {
+  console.log("Beemo online on", process.env.PORT || 3000);
+  console.log("Key check:", process.env.DEEPSEEK_KEY?.substring(0, 10) || "MISSING", "...");
+  processFU();
+});
