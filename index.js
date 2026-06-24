@@ -74,12 +74,35 @@ function sanitizeField(raw) {
 }
 
 /* =========================
-   SESSION STORE
+   SESSION STORE (persisted to disk — survives Render sleep)
 ========================= */
 
+const SESSIONS_FILE = "./sessions.json";
 const store = {}; // { phone: { data: {...}, exp: timestamp } }
-const activeQueue = []; // phones waiting for an active slot
-let processingQueue = false;
+let saveTimer = null;
+
+function loadSessions() {
+  try {
+    if (fs.existsSync(SESSIONS_FILE)) {
+      const raw = fs.readFileSync(SESSIONS_FILE, "utf-8");
+      const loaded = JSON.parse(raw);
+      Object.assign(store, loaded);
+      console.log(`Loaded ${Object.keys(store).length} sessions from disk`);
+    }
+  } catch (e) { console.error("Failed to load sessions:", e.message); }
+}
+
+function saveSessions() {
+  try {
+    fs.writeFileSync(SESSIONS_FILE, JSON.stringify(store), "utf-8");
+  } catch (e) { console.error("Failed to save sessions:", e.message); }
+}
+
+// Debounced save — writes at most once per 5 seconds
+function scheduleSave() {
+  if (saveTimer) clearTimeout(saveTimer);
+  saveTimer = setTimeout(saveSessions, 5000);
+}
 
 function getSession(phone) {
   const now = Date.now();
@@ -103,6 +126,7 @@ function setSession(phone, key, val) {
   const s = getSession(phone);
   s[key] = val;
   store[phone].exp = Date.now() + SESSION_TTL * 1000;
+  scheduleSave();
 }
 
 function touchActive(phone) {
@@ -562,11 +586,18 @@ async function handleMessage(phone, text, fromQueue = false) {
   // ── WELCOME FLOW ──
   if (firstMsg) {
     setSession(phone, "greeted", true);
-    await sendText(phone,
-      "Assalamualaikum! I'm Beemo from Ibrahim Hostel Islamabad 🏠\n\n" +
-      "Which university or workplace are you at? And approximately kitne arse ke liye chahiye?\n\n" +
-      "Tell me a bit about yourself and I'll guide you to the best option 😊");
-    return;
+    const wordCount = text.trim().split(/\s+/).length;
+    // If they send a real message (not just "hi"), skip intro — answer directly
+    if (wordCount > 3 || text.length > 20) {
+      setSession(phone, "msgCount", 2);
+      // Fall through to normal AI reply below instead of sending intro
+    } else {
+      await sendText(phone,
+        "Assalamualaikum! I'm Beemo from Ibrahim Hostel Islamabad 🏠\n\n" +
+        "Which university or workplace are you at? And approximately kitne arse ke liye chahiye?\n\n" +
+        "Tell me a bit about yourself and I'll guide you to the best option 😊");
+      return;
+    }
   }
 
   // ── 1-SEATER / 2-SEATER → hand to Professor Yahya ──
@@ -748,6 +779,7 @@ app.get("/", (req, res) => res.send("Beemo Bot — Ibrahim Hostel"));
 ========================= */
 
 app.listen(process.env.PORT || 3000, () => {
+  loadSessions();
   console.log("Beemo running on port " + (process.env.PORT || 3000));
   processFollowups();
 });
