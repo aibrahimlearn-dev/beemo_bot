@@ -266,8 +266,22 @@ app.get("/webhook", (req, res) => {
 
 app.get("/", (_, res) => res.send("Beemo 🏠"));
 
+app.get("/debug", (_, res) => {
+  res.json({
+    deepseek: process.env.DEEPSEEK_KEY ? `${process.env.DEEPSEEK_KEY.substring(0, 8)}...` : "❌ MISSING",
+    gemini: process.env.GEMINI_KEY ? `${process.env.GEMINI_KEY.substring(0, 8)}...` : "❌ MISSING",
+    wa: process.env.WHATSAPP_TOKEN ? `${process.env.WHATSAPP_TOKEN.substring(0, 8)}...` : "❌ MISSING",
+    phone: process.env.PHONE_NUMBER_ID || "❌ MISSING",
+    verify: process.env.VERIFY_TOKEN ? "✅" : "❌",
+    sessions: Object.keys($).length,
+    followups: Object.keys(FU).length,
+  });
+});
+
 app.listen(process.env.PORT || 3000, () => {
   console.log("Beemo online on", process.env.PORT || 3000);
-  console.log("Key check:", process.env.DEEPSEEK_KEY?.substring(0, 10) || "MISSING", "...");
+  console.log("🔑 DeepSeek:", process.env.DEEPSEEK_KEY ? "✅" : "❌ MISSING");
+  console.log("🔑 Gemini:", process.env.GEMINI_KEY ? "✅" : "❌ MISSING");
+  console.log("🔑 WhatsApp:", process.env.WHATSAPP_TOKEN ? "✅" : "❌ MISSING");
   processFU();
 });
