@@ -6,6 +6,10 @@ const fs = require("fs");
 const app = express();
 app.use(express.json({ limit: "1mb" }));
 
+// Global crash handler — prevents unhandled rejections from killing the bot
+process.on("unhandledRejection", (err) => console.error("Unhandled rejection:", err?.message || err));
+process.on("uncaughtException", (err) => console.error("Uncaught exception:", err?.message || err));
+
 /* =========================
    CONSTANTS
 ========================= */
@@ -154,7 +158,7 @@ async function processActiveQueue() {
     touchActive(item.phone);
     await sendText(item.phone, "Beemo is here now! Sorry for the wait — how can I help you? 😊");
     // Now process their original message
-    handleMessage(item.phone, item.text, true);
+    await handleMessage(item.phone, item.text, true);
   }
   processingQueue = false;
 }
@@ -627,11 +631,11 @@ app.post("/webhook", async (req, res) => {
       if (!isActiveSlotFree() && !getSession(phone)._bypassQueue) {
         activeQueue.push({ phone, text });
         await sendText(phone, "Beemo here — I'm helping a few others right now. I'll reply to you in just a moment! 😊");
-        processActiveQueue();
+        await processActiveQueue().catch(e => console.error("queue err:", e?.message));
         return res.sendStatus(200);
       }
 
-      handleMessage(phone, text);
+      await handleMessage(phone, text).catch(e => console.error("handleMessage err:", e?.message));
     }
 
     if (type === "interactive") {
@@ -647,7 +651,7 @@ app.post("/webhook", async (req, res) => {
       if (!isActiveSlotFree() && !getSession(phone)._bypassQueue) {
         activeQueue.push({ phone, text: reply.title });
         await sendText(phone, "Beemo here — I'll reply in just a moment! 😊");
-        processActiveQueue();
+        await processActiveQueue().catch(e => console.error("queue err:", e?.message));
         return res.sendStatus(200);
       }
 
@@ -677,7 +681,7 @@ app.post("/webhook", async (req, res) => {
         await sendText(phone,
           "What would you like to know more about? Rooms, location, food, security — happy to help 😊");
       } else {
-        handleMessage(phone, reply.title);
+        await handleMessage(phone, reply.title).catch(e => console.error("handleMessage btn err:", e?.message));
       }
     }
 
