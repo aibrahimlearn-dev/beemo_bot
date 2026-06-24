@@ -103,16 +103,17 @@ async function showFacs(to) {
 // ─── MENU ───────────────────────────────────────────────
 
 const MENU = [
-  { title: "🛏️ Rooms", rows: [
-    { id: "SEND_ROOM_PICS", title: "Room photos", description: "See the actual rooms" },
-    { id: "BROWSE_ROOMS", title: "Room types & prices", description: "View all room options" },
+  { title: "🛏️ Rooms & Pricing", rows: [
+    { id: "BROWSE_ROOMS", title: "📊 All room options", description: "4-seater, 3-seater, 2-seater, 1-seater prices dekhein" },
+    { id: "SEND_ROOM_PICS", title: "🖼️ Room photos", description: "Rooms ki asli photos dekhein" },
   ]},
-  { title: "🏠 Facilities", rows: [
-    { id: "SEND_FACILITY_PICS", title: "Facilities", description: "Rooftop, WiFi, meals, security" },
+  { title: "🏠 The Hostel", rows: [
+    { id: "SEND_FACILITY_PICS", title: "📸 Facilities", description: "Rooftop, WiFi, meals, security — photos" },
+    { id: "MORE_LOCATION", title: "📍 Location", description: "Kahan hai, universities se kitna door?" },
   ]},
   { title: "📅 Booking", rows: [
-    { id: "BOOK_NOW", title: "Book now", description: "Start the booking process" },
-    { id: "TALK_HUMAN", title: "Talk to Professor Yahya", description: "He'll guide you" },
+    { id: "BOOK_NOW", title: "✅ Book a seat", description: "Apni seat reserve karayein" },
+    { id: "TALK_HUMAN", title: "🗣️ Talk to Professor", description: "Professor Yahya se personally baat karein" },
   ]},
 ];
 
@@ -248,7 +249,8 @@ app.post("/webhook", async (req, res) => {
 
       if (reply.id === "SEND_ROOM_PICS") { await showRooms(phone); await btns(phone, "Which one?", [{ id: "BOOK_NOW", title: "✅ Book" }, { id: "ASK_AGAIN", title: "❓ Questions" }]); }
       else if (reply.id === "SEND_FACILITY_PICS") await showFacs(phone);
-      else if (reply.id === "BROWSE_ROOMS") await txt(phone, "Per person/month (all-inclusive):\n• 4-seater: ~18,000\n• 3-seater: ~22,000\n• 2-seater: ~24,000\n• 1-seater: ~28,000");
+      else if (reply.id === "BROWSE_ROOMS") await txt(phone, "Per person/month (all-inclusive):\n🧑‍🤝‍🧑 4-seater: ~18,000\n👥 3-seater: ~22,000\n👫 2-seater: ~24,000\n🧑 1-seater: ~28,000\n\nKaunsa room aapke liye sahi rahega?");
+      else if (reply.id === "MORE_LOCATION") await txt(phone, "📍 We're in I-11/2, Islamabad — House 1572, Street 8.\n\n🚶 5 min: FAST, NUTECH, Bahria, Air Uni, IIUI\n🚗 10-15 min: NUST\n\nQuiet residential area, safe for students.");
       else if (reply.id === "BOOK_NOW") { await txt(phone, "Great! Could you share your name aur kis date se room chahiye? Professor Yahya will confirm."); await scheduleFU(phone); }
       else if (reply.id === "TALK_HUMAN") await txt(phone, "Connecting you with Professor Yahya 🙋 He'll reply here.");
       else await handle(phone, reply.title);
