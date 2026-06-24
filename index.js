@@ -63,22 +63,30 @@ async function askAI(phone, userText) {
   }
   if (ctx) ctx = `[Guest info:\n${ctx}]\n\n`;
 
-  const msgs = [{ role: "system", content: SYSTEM_PROMPT }];
-  for (const m of h) msgs.push(m);
-  msgs.push({ role: "user", content: ctx + userText });
+  // Gemini format: system_instruction + contents array
+  const contents = [];
+  for (const m of h) {
+    contents.push({
+      role: m.role === "assistant" ? "model" : "user",
+      parts: [{ text: m.content }]
+    });
+  }
+  contents.push({
+    role: "user",
+    parts: [{ text: ctx + userText }]
+  });
 
   try {
-    const res = await axios.post("https://api.deepseek.com/chat/completions", {
-      model: "deepseek-chat",
-      messages: msgs,
-      max_tokens: 500,
-      temperature: 0.7,
-    }, {
-      headers: { Authorization: `Bearer ${process.env.DEEPSEEK_KEY}`, "Content-Type": "application/json" },
-      timeout: 30000,
-    });
+    const res = await axios.post(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${process.env.GEMINI_KEY}`,
+      {
+        system_instruction: { parts: [{ text: SYSTEM_PROMPT }] },
+        contents: contents,
+      },
+      { timeout: 30000 }
+    );
 
-    const reply = res.data.choices[0].message.content;
+    const reply = res.data.candidates[0].content.parts[0].text;
     addHistory(phone, "user", userText);
     addHistory(phone, "assistant", reply);
     setSession(phone, "msgCount", (session.msgCount || 0) + 1);
