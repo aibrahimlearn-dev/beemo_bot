@@ -572,7 +572,7 @@ async function handleMessage(phone, text, fromQueue = false) {
   const needsIntro = !s.greeted;
   setSession(phone, "greeted", true);
   if (isGreeting && needsIntro) {
-    await sendText(phone, "Assalamualaikum! Beemo yahan se bol raha hoon Ibrahim Hostel Islamabad 🏠\n\nAp kahan study ya job karte hain? Aur approximately kitne arse ke liye chahiye?\n\nThoda batao apne baare mein, main best option suggest karunga 😊");
+    await sendText(phone, "Assalamualaikum! Main Beemo hoon, Ibrahim Hostel Islamabad se 🏠\n\nAap kahan study ya job karte hain? Aur approximately kitne arse ke liye accommodation chahiye?\n\nMujhe apne baare mein kuch bata sakte hain, main aapke liye best option suggest karunga 😊");
     return;
   }
   if (isGreeting && !needsIntro) { return; } // ignore repeated "hi"
