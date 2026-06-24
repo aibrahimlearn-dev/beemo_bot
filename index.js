@@ -512,7 +512,7 @@ async function processFollowups() {
 }
 
 /* =========================
-   MAIN MENU
+   MAIN MENU CATALOG
 ========================= */
 
 const MENU_SECTIONS = [
@@ -534,45 +534,29 @@ const MENU_SECTIONS = [
 ========================= */
 
 async function handleMessage(phone, text, fromQueue = false) {
-  // Register as active if not from queue (queue already registered)
   if (!fromQueue) touchActive(phone);
   else setSession(phone, "_bypassQueue", true);
 
-  // Rate limit check
-  if (isRateLimited(phone)) {
-    console.log(`⏳ Rate limited ${phone}`);
-    return; // silently drop — no reply
-  }
+  if (isRateLimited(phone)) { console.log(`⏳ Rate limited ${phone}`); return; }
+  if (isAbusive(text) || isHarassment(text)) { console.log(`🚫 Blocked ${phone}`); setSession(phone, "blocked", true); return; }
 
-  // Abuse / prompt injection check — silently block
-  if (isAbusive(text) || isHarassment(text)) {
-    console.log(`🚫 Blocked abusive from ${phone}`);
-    setSession(phone, "blocked", true); // permanently block this session
-    return; // silently drop — no reply, no warning
-  }
-
-  // Dead convo check
+  // Dead convo
   if (isConvoDead(phone)) {
     const s = getSession(phone);
     if (!s.deadNotified) {
       setSession(phone, "deadNotified", true);
       const name = sanitizeField(s.name || "");
-      await sendText(phone,
-        `${name ? name + "," : ""} I've shared the main details here. Professor Yahya will follow up with you personally. In the meantime, feel free to check ibrahimhostel.com for more info.`);
+      await sendText(phone, `${name ? name + "," : ""} I've shared the main details here. Professor Yahya will follow up with you personally.`);
     }
     return;
   }
 
-  // Extract info (sanitized internally)
   extractInfo(text, phone);
   checkEngagement(text, phone);
-
   const s = getSession(phone);
-  const firstMsg = !s.greeted;
-  const msgCount = s.msgCount || 0;
-  setSession(phone, "msgCount", msgCount + 1);
+  const msgCount = (s.msgCount || 0) + 1;
+  setSession(phone, "msgCount", msgCount);
 
-  // INTENT DETECTION
   const t = text.toLowerCase();
   const wantsPics = /\b(pic|photo|image|see|show|look|dekhao|dikhao)\b/i.test(t);
   const wantsRooms = /\b(room|dorm|seater|accommodation|kamra)\b/i.test(t);
@@ -582,91 +566,42 @@ async function handleMessage(phone, text, fromQueue = false) {
   const wants1Seat = /\b(1.?seater|one.?seater|single|private room)\b/i.test(t);
   const wants2Seat = /\b(2.?seater|two.?seater)\b/i.test(t);
   const longTerm = /\b(month?s|monthly|long.?term|permanent|year|semester|mahina|sal)\b/i.test(t);
+  const isGreeting = /^(hi|hello|hey|assalamualaikum|salam|hii|helloo?|hlo|hy|hwy)\W*$/i.test(text.trim());
 
-  // ── WELCOME FLOW ──
-  if (firstMsg) {
-    setSession(phone, "greeted", true);
-    const wordCount = text.trim().split(/\s+/).length;
-    // If they send a real message (not just "hi"), skip intro — answer directly
-    if (wordCount > 3 || text.length > 20) {
-      setSession(phone, "msgCount", 2);
-      // Fall through to normal AI reply below instead of sending intro
-    } else {
-      await sendText(phone,
-        "Assalamualaikum! I'm Beemo from Ibrahim Hostel Islamabad 🏠\n\n" +
-        "Which university or workplace are you at? And approximately kitne arse ke liye chahiye?\n\n" +
-        "Tell me a bit about yourself and I'll guide you to the best option 😊");
-      return;
-    }
-  }
-
-  // ── 1-SEATER / 2-SEATER → hand to Professor Yahya ──
-  if (wants1Seat || wants2Seat) {
-    await sendText(phone,
-      "Beemo here — those specific rooms are often booked and availability changes fast. Professor Yahya handles those personally. Let him guide you shortly.");
+  // ── WELCOME: only on pure greeting, only once per phone ──
+  const needsIntro = !s.greeted;
+  setSession(phone, "greeted", true);
+  if (isGreeting && needsIntro) {
+    await sendText(phone, "Assalamualaikum! I'm Beemo from Ibrahim Hostel Islamabad 🏠\n\nWhich university or workplace are you at? And approximately kitne arse ke liye chahiye?\n\nTell me a bit about yourself and I'll guide you to the best option 😊");
     return;
   }
+  if (isGreeting && !needsIntro) { return; } // ignore repeated "hi"
 
-  // ── HUMAN ──
-  if (wantsHuman) {
-    await sendText(phone,
-      "Beemo here — I'll connect you with Professor Yahya 🙋 He'll reply here personally. In the meantime you can check ibrahimhostel.com.");
-    return;
-  }
-
-  // ── LONG TERM DETECTION → monthly pricing ──
+  // ── INTENTS ──
+  if (wants1Seat || wants2Seat) { await sendText(phone, "Beemo here — those specific rooms are often booked and availability changes fast. Professor Yahya handles those personally. Let him guide you shortly."); return; }
+  if (wantsHuman) { await sendText(phone, "Beemo here — I'll connect you with Professor Yahya 🙋 He'll reply here personally."); return; }
   if (longTerm && !s.monthlyOffered) {
     setSession(phone, "monthlyOffered", true);
-    await sendText(phone,
-      "If you're looking for longer term, we have monthly packages that work out much more affordable.\n\n" +
-      "Per person per month (all-inclusive: rent + 2 meals + WiFi + laundry):\n" +
-      "• 4-seater: ~18,000 PKR\n" +
-      "• 3-seater: ~22,000 PKR\n" +
-      "• 2-seater: ~24,000 PKR\n" +
-      "• 1-seater: ~28,000 PKR\n\n" +
-      "Would you like to see photos of any of these?");
-    setSession(phone, "botMsgs", (s.botMsgs || 0) + 1);
+    await sendText(phone, "If you're looking for longer term, we have monthly packages that work out much more affordable.\n\nPer person per month (all-inclusive: rent + 2 meals + WiFi + laundry):\n• 4-seater: ~18,000 PKR\n• 3-seater: ~22,000 PKR\n• 2-seater: ~24,000 PKR\n• 1-seater: ~28,000 PKR\n\nWould you like to see photos?");
     return;
   }
-
-  // ── ROOMS + PICS ──
   if (wantsRooms && wantsPics) {
     await sendRoomPics(phone);
-    await sendButtons(phone, "Which one interests you?",
-      [{ id: "BOOK_NOW", title: "✅ Book now" }, { id: "ASK_AGAIN", title: "❓ Questions" }]);
+    await sendButtons(phone, "Which one interests you?", [{ id: "BOOK_NOW", title: "✅ Book now" }, { id: "ASK_AGAIN", title: "❓ Questions" }]);
     setSession(phone, "menuShown", true);
-    setSession(phone, "botMsgs", (s.botMsgs || 0) + 2);
     return;
   }
-
-  // ── FACILITIES + PICS ──
-  if (wantsFac && wantsPics) {
-    await sendFacilityPics(phone);
-    await sendText(phone, "All included in the package. Would you like to book a visit?");
-    setSession(phone, "menuShown", true);
-    setSession(phone, "botMsgs", (s.botMsgs || 0) + 2);
-    return;
-  }
-
-  // ── BOOK ──
-  if (wantsBook) {
-    await sendText(phone,
-      "Beemo here — I can help with that! Could you share your name aur kis date se room chahiye? Professor Yahya will confirm availability and guide you through the next steps.");
-    return;
-  }
+  if (wantsFac && wantsPics) { await sendFacilityPics(phone); await sendText(phone, "All included in the package. Would you like to book?"); setSession(phone, "menuShown", true); return; }
+  if (wantsBook) { await sendText(phone, "Beemo here — could you share your name aur kis date se room chahiye? Professor Yahya will confirm."); return; }
 
   // ── AI REPLY ──
   const reply = await askDeepSeek(phone, text);
   await sendText(phone, reply);
 
-  // ── SHOW MENU AFTER 2-3 EXCHANGES ──
-  if (msgCount >= 3 && !s.menuShown) {
+  // ── SHOW CATALOG MENU AFTER 4+ MSGS ──
+  if (msgCount >= 4 && !s.menuShown) {
     setSession(phone, "menuShown", true);
-    await sendList(phone,
-      "What would you like to see? 👇",
-      "Browse through our options:",
-      "📋 Browse",
-      MENU_SECTIONS);
+    await sendList(phone, "Aap kya dekhna chahenge? 👇", "Browse our options:", "📋 Browse", MENU_SECTIONS);
   }
 }
 
